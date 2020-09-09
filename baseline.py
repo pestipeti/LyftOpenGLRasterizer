@@ -9,7 +9,37 @@ from l5kit.rasterization.rasterizer_builder import (_load_metadata, get_hardcode
 from OpenGL.GLUT import *
 from opengl_rasterizer import OpenGLSemanticRasterizer
 from torch.utils.data import DataLoader
+from torch.utils.data._utils.collate import default_collate
 from tqdm import tqdm
+
+
+def lyft_collate_fn(batch):
+
+    element = batch[0]
+
+    rasterizer_args = [
+        "image",
+        "agents",
+        "selected_agent",
+        "history_frames",
+        "history_agents",
+        "history_tl_faces"
+    ]
+
+    result = {
+        key: default_collate([d[key] for d in batch]) for key in element if key not in rasterizer_args
+    }
+
+    for element in batch:
+
+        for rasterizer_arg in rasterizer_args:
+
+            if rasterizer_arg not in result:
+                result[rasterizer_arg] = []
+
+            result[rasterizer_arg].append(element[rasterizer_arg])
+
+    return result
 
 
 if __name__ == '__main__':
@@ -41,12 +71,13 @@ if __name__ == '__main__':
         semantic_map_path=semantic_map_filepath,
         world_to_ecef=world_to_ecef,
     )
-    dataset = AgentDataset(cfg, zarr_dataset, rast)
+    dataset = AgentDataset(cfg, zarr_dataset, None)
 
     train_dataloader = DataLoader(dataset,
+                                  collate_fn=lyft_collate_fn,
                                   shuffle=False,
                                   batch_size=32,
-                                  num_workers=0)
+                                  num_workers=4)
 
     tr_it = iter(train_dataloader)
 
@@ -57,6 +88,23 @@ if __name__ == '__main__':
         except StopIteration:
             tr_it = iter(train_dataloader)
             data = next(tr_it)
+
+        batch_num = len(data["image"])
+        data["image"] = []
+
+        for i in range(batch_num):
+            image = rast.rasterize(
+                history_frames=data["history_frames"][i],
+                history_agents=data["history_agents"][i],
+                history_tl_faces=data["history_tl_faces"][i],
+                agent=data["selected_agent"][i],
+                agents=data["agents"][i]
+            )
+
+            image = torch.from_numpy(image)
+            data["image"].append(image)
+
+        data["image"] = torch.stack(data["image"])
 
         # Saving test image
         if itr == 0:
